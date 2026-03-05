@@ -1,0 +1,9 @@
+# Ignore build outputs and local env
+build*/
+*.exe
+*.dll
+*.mp4
+*.csv
+.env*
+.vscode/
+

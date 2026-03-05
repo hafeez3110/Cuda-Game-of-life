@@ -1,0 +1,261 @@
+cmake_minimum_required(VERSION 3.18)
+project(GameOfLife_Advanced LANGUAGES CXX CUDA)
+
+# Set C++ standard
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CUDA_STANDARD 17)
+set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+
+# ==================================================================
+# Feature Options
+# ==================================================================
+option(USE_CUDA_GRAPHS "Enable CUDA Graphs for reduced launch overhead" ON)
+option(USE_TEXTURE_MEMORY "Use texture memory for grid reads" OFF)
+option(USE_BIT_PACKING "Enable bit-packed representation (32x compression)" OFF)
+option(USE_PINNED_MEMORY "Use pinned host memory for async transfers" ON)
+option(USE_OPENGL_INTEROP "Enable CUDA-OpenGL interop (experimental)" OFF)
+option(BUILD_TESTS "Build unit tests with GoogleTest" OFF)
+option(ENABLE_NVTX "Enable NVTX profiling markers" ON)
+option(BUILD_ADVANCED "Build advanced version with all features" ON)
+
+# ==================================================================
+# CUDA Architecture Detection
+# ==================================================================
+if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+    # Auto-detect GPU architecture
+    include(FindCUDA/select_compute_arch)
+    CUDA_DETECT_INSTALLED_GPUS(INSTALLED_GPU_CCS_1)
+    string(STRIP "${INSTALLED_GPU_CCS_1}" INSTALLED_GPU_CCS_2)
+    string(REPLACE " " ";" INSTALLED_GPU_CCS_3 "${INSTALLED_GPU_CCS_2}")
+    string(REPLACE "." "" CUDA_ARCH_LIST "${INSTALLED_GPU_CCS_3}")
+    
+    if(CUDA_ARCH_LIST)
+        set(CMAKE_CUDA_ARCHITECTURES ${CUDA_ARCH_LIST})
+        message(STATUS "Auto-detected CUDA architectures: ${CMAKE_CUDA_ARCHITECTURES}")
+    else()
+        # Fallback to common architectures
+        set(CMAKE_CUDA_ARCHITECTURES 86 89)  # RTX 30xx and 40xx
+        message(STATUS "Using default CUDA architectures: ${CMAKE_CUDA_ARCHITECTURES}")
+    endif()
+endif()
+
+# ==================================================================
+# Optimization Presets
+# ==================================================================
+# Define presets for different GPUs
+set(PRESET "AUTO" CACHE STRING "GPU optimization preset (AUTO, RTX4090, RTX4060, RTX3090, RTX3060)")
+set_property(CACHE PRESET PROPERTY STRINGS AUTO RTX4090 RTX4060 RTX3090 RTX3060)
+
+if(PRESET STREQUAL "RTX4090")
+    set(BLOCK_SIZE 32 CACHE STRING "Thread block size")
+    set(CMAKE_CUDA_ARCHITECTURES 89)
+    message(STATUS "Using RTX 4090 preset: Block size 32x32, Arch 89")
+elseif(PRESET STREQUAL "RTX4060")
+    set(BLOCK_SIZE 16 CACHE STRING "Thread block size")
+    set(CMAKE_CUDA_ARCHITECTURES 89)
+    message(STATUS "Using RTX 4060 preset: Block size 16x16, Arch 89")
+elseif(PRESET STREQUAL "RTX3090")
+    set(BLOCK_SIZE 32 CACHE STRING "Thread block size")
+    set(CMAKE_CUDA_ARCHITECTURES 86)
+    message(STATUS "Using RTX 3090 preset: Block size 32x32, Arch 86")
+elseif(PRESET STREQUAL "RTX3060")
+    set(BLOCK_SIZE 16 CACHE STRING "Thread block size")
+    set(CMAKE_CUDA_ARCHITECTURES 86)
+    message(STATUS "Using RTX 3060 preset: Block size 16x16, Arch 86")
+else()
+    set(BLOCK_SIZE 16 CACHE STRING "Thread block size")
+    message(STATUS "Using AUTO preset: Block size 16x16")
+endif()
+
+# ==================================================================
+# Grid Configuration
+# ==================================================================
+set(GRID_WIDTH 1024 CACHE STRING "Grid width")
+set(GRID_HEIGHT 1024 CACHE STRING "Grid height")
+
+# ==================================================================
+# Find Dependencies
+# ==================================================================
+
+# Find CUDA
+find_package(CUDAToolkit REQUIRED)
+message(STATUS "CUDA Toolkit version: ${CUDAToolkit_VERSION}")
+message(STATUS "CUDA Toolkit root: ${CUDAToolkit_ROOT}")
+
+# Add CUDA toolkit includes explicitly
+include_directories(${CUDAToolkit_INCLUDE_DIRS})
+link_directories(${CUDAToolkit_LIBRARY_DIR})
+
+# Find OpenCV
+if(NOT DEFINED OpenCV_DIR AND EXISTS "C:/opencv/build")
+    set(OpenCV_DIR "C:/opencv/build/x64/vc16/lib")
+endif()
+find_package(OpenCV REQUIRED)
+include_directories(${OpenCV_INCLUDE_DIRS})
+message(STATUS "OpenCV found!")
+message(STATUS "OpenCV version: ${OpenCV_VERSION}")
+message(STATUS "OpenCV libraries: ${OpenCV_LIBS}")
+message(STATUS "OpenCV include dirs: ${OpenCV_INCLUDE_DIRS}")
+
+# Find NVTX (part of CUDA Toolkit)
+if(ENABLE_NVTX)
+    find_library(NVTX_LIBRARY
+        NAMES nvToolsExt nvToolsExt64
+        PATHS ${CUDAToolkit_LIBRARY_DIR}
+        NO_DEFAULT_PATH
+    )
+    if(NVTX_LIBRARY)
+        message(STATUS "NVTX library found: ${NVTX_LIBRARY}")
+    else()
+        message(WARNING "NVTX library not found, profiling will be disabled")
+        set(ENABLE_NVTX OFF)
+    endif()
+endif()
+
+# GoogleTest for unit tests
+if(BUILD_TESTS)
+    include(FetchContent)
+    FetchContent_Declare(
+        googletest
+        GIT_REPOSITORY https://github.com/google/googletest.git
+        GIT_TAG release-1.12.1
+    )
+    FetchContent_MakeAvailable(googletest)
+    enable_testing()
+endif()
+
+# ==================================================================
+# Compiler Flags
+# ==================================================================
+
+# CUDA compiler flags
+set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --use_fast_math")
+set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --ptxas-options=-v")  # Verbose PTX compilation
+set(CMAKE_CUDA_FLAGS_RELEASE "${CMAKE_CUDA_FLAGS_RELEASE} -O3")
+set(CMAKE_CUDA_FLAGS_DEBUG "${CMAKE_CUDA_FLAGS_DEBUG} -G")  # Device debug info
+
+# C++ compiler flags
+if(MSVC)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /W4 /MP")
+    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /O2 /Ob2")
+else()
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra")
+    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3 -march=native")
+endif()
+
+# ==================================================================
+# Compile Definitions
+# ==================================================================
+
+# Pass feature flags to code
+if(USE_CUDA_GRAPHS)
+    add_compile_definitions(USE_CUDA_GRAPHS=1)
+else()
+    add_compile_definitions(USE_CUDA_GRAPHS=0)
+endif()
+
+if(USE_TEXTURE_MEMORY)
+    add_compile_definitions(USE_TEXTURE_MEMORY=1)
+else()
+    add_compile_definitions(USE_TEXTURE_MEMORY=0)
+endif()
+
+if(USE_BIT_PACKING)
+    add_compile_definitions(USE_BIT_PACKING=1)
+else()
+    add_compile_definitions(USE_BIT_PACKING=0)
+endif()
+
+if(USE_PINNED_MEMORY)
+    add_compile_definitions(USE_PINNED_MEMORY=1)
+else()
+    add_compile_definitions(USE_PINNED_MEMORY=0)
+endif()
+
+if(ENABLE_NVTX)
+    add_compile_definitions(ENABLE_NVTX=1)
+else()
+    add_compile_definitions(ENABLE_NVTX=0)
+endif()
+
+# Grid configuration (passed as override defines)
+add_compile_definitions(GRID_WIDTH_OVERRIDE=${GRID_WIDTH})
+add_compile_definitions(GRID_HEIGHT_OVERRIDE=${GRID_HEIGHT})
+add_compile_definitions(BLOCK_SIZE_OVERRIDE=${BLOCK_SIZE})
+
+# ==================================================================
+# Executable: Advanced Version
+# ==================================================================
+
+if(BUILD_ADVANCED)
+    add_executable(gameoflife_advanced 
+        main_advanced.cpp
+        gameoflife_advanced.cu
+        utils_advanced.h
+    )
+    
+    # Mark .cu file as CUDA
+    set_source_files_properties(gameoflife_advanced.cu PROPERTIES LANGUAGE CUDA)
+
+    target_link_libraries(gameoflife_advanced
+        ${OpenCV_LIBS}
+        CUDA::cudart
+    )
+
+    if(ENABLE_NVTX AND NVTX_LIBRARY)
+        target_link_libraries(gameoflife_advanced ${NVTX_LIBRARY})
+    endif()
+
+    set_target_properties(gameoflife_advanced PROPERTIES
+        CUDA_SEPARABLE_COMPILATION ON
+        CUDA_RESOLVE_DEVICE_SYMBOLS ON
+    )
+
+    message(STATUS "Advanced visualization executable: gameoflife_advanced")
+endif()
+
+# ==================================================================
+# Unit Tests
+# ==================================================================
+
+if(BUILD_TESTS)
+    add_executable(gameoflife_tests
+        tests/test_rules.cpp
+        tests/test_patterns.cpp
+        gameoflife_advanced.cu
+    )
+    
+    target_link_libraries(gameoflife_tests
+        gtest_main
+        CUDA::cudart
+    )
+    
+    include(GoogleTest)
+    gtest_discover_tests(gameoflife_tests)
+    
+    message(STATUS "Unit tests enabled")
+endif()
+
+# ==================================================================
+# Configuration Summary
+# ==================================================================
+
+message(STATUS "")
+message(STATUS "========================================")
+message(STATUS "Conway's Game of Life - Advanced Build")
+message(STATUS "========================================")
+message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
+message(STATUS "CUDA architectures: ${CMAKE_CUDA_ARCHITECTURES}")
+message(STATUS "Grid size: ${GRID_WIDTH} x ${GRID_HEIGHT}")
+message(STATUS "Block size: ${BLOCK_SIZE} x ${BLOCK_SIZE}")
+message(STATUS "")
+message(STATUS "Features:")
+message(STATUS "  CUDA Graphs: ${USE_CUDA_GRAPHS}")
+message(STATUS "  Texture Memory: ${USE_TEXTURE_MEMORY}")
+message(STATUS "  Bit Packing: ${USE_BIT_PACKING}")
+message(STATUS "  Pinned Memory: ${USE_PINNED_MEMORY}")
+message(STATUS "  NVTX Profiling: ${ENABLE_NVTX}")
+message(STATUS "  Unit Tests: ${BUILD_TESTS}")
+message(STATUS "========================================")
+message(STATUS "")

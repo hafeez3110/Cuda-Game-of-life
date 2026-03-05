@@ -1,0 +1,74 @@
+cmake_minimum_required(VERSION 3.18)
+project(GameOfLife LANGUAGES CXX CUDA)
+
+# Set C++ and CUDA standards
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CUDA_STANDARD 17)
+set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+
+# Set CUDA architecture for RTX 4060 (Ada Lovelace - compute capability 8.9)
+# Also include 8.6 for broader compatibility
+set(CMAKE_CUDA_ARCHITECTURES 86 89)
+
+# CUDA flags for optimization
+set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -O3 -use_fast_math")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /O2")
+
+# Include CUDA headers for C++ files
+include_directories(${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
+
+# Console version (no OpenCV dependency)
+add_executable(gameoflife_console
+    main_console.cpp
+    gameoflife.cu
+)
+
+# Set CUDA separable compilation
+set_property(TARGET gameoflife_console PROPERTY CUDA_SEPARABLE_COMPILATION ON)
+
+# Platform-specific settings
+if(WIN32)
+    # Windows-specific settings
+    set_property(TARGET gameoflife_console PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+endif()
+
+# Try to find OpenCV for full version with visualization
+find_package(OpenCV QUIET)
+
+if(OpenCV_FOUND)
+    message(STATUS "OpenCV found! Building full version with visualization...")
+    message(STATUS "OpenCV version: ${OpenCV_VERSION}")
+    message(STATUS "OpenCV libraries: ${OpenCV_LIBS}")
+    
+    # Add executable with OpenCV visualization
+    add_executable(gameoflife
+        main.cpp
+        gameoflife.cu
+    )
+    
+    # Link OpenCV libraries
+    target_link_libraries(gameoflife ${OpenCV_LIBS})
+    
+    # Set CUDA properties
+    set_property(TARGET gameoflife PROPERTY CUDA_SEPARABLE_COMPILATION ON)
+    
+    if(WIN32)
+        set_property(TARGET gameoflife PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+    endif()
+    
+    include_directories(${OpenCV_INCLUDE_DIRS})
+else()
+    message(STATUS "OpenCV not found. Building console version only.")
+    message(STATUS "To build with visualization, install OpenCV and specify:")
+    message(STATUS "  -DOpenCV_DIR=/path/to/opencv/build")
+    message(STATUS "  or")
+    message(STATUS "  -DCMAKE_TOOLCHAIN_FILE=/path/to/vcpkg/scripts/buildsystems/vcpkg.cmake")
+endif()
+
+# Print configuration info
+message(STATUS "CUDA architectures: ${CMAKE_CUDA_ARCHITECTURES}")
+message(STATUS "Console executable: gameoflife_console")
+if(OpenCV_FOUND)
+    message(STATUS "Visualization executable: gameoflife")
+endif()
